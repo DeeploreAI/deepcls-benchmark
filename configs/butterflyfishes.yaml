@@ -11,8 +11,8 @@ data:
   augmentation: True
 
 train:
-  expt_name: "butterflyfishes-resnet34"
-  model_name: "resnet34"
+  expt_name: "butterflyfishes-resnet101"
+  model_name: "resnet101"
   pretrained: # "imagenet1k_v1"
   optimizer: "AdamW"
   lr: 0.001

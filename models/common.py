@@ -21,15 +21,37 @@ def auto_pad(k: int, s: int = 1, d: int = 1):
 
 
 class Linear(nn.Module):
-    """Linear / Fully-connected layer. No batch norm."""
+    """
+    Linear / Fully-connected layer. No batch norm or layer norm.
+    """
 
-    def __init__(self, c_in: int, c_out: int, act: bool=True, bias: bool=False):
+    def __init__(self, c_in: int, c_out: int, dropout=0.1, act: bool=True, bias: bool=False):
         super().__init__()
-        self.linear = nn.Linear(c_in, c_out, bias=bias)
         self.act = ReLU() if act else nn.Identity()
+        self.layers = nn.Sequential(nn.Dropout(dropout),
+                                    nn.Linear(c_in, c_out, bias=bias))
 
     def forward(self, x):
-        return self.act(self.linear(x))
+        x = self.layers(x)
+        x = self.act(x)
+        return x
+
+
+class MLP(nn.Module):
+    """
+    Multi-layer perceptron, MLP, feed-forward network, FFN.
+    """
+
+    def __init__(self, c_in, c_hidden, c_output, num_layers):
+        super().__init__()
+        self.num_layers = num_layers
+        h = [c_hidden] * (num_layers - 1)
+        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([c_in] + h, h + [c_output]))
+
+    def forward(self, x):
+        for i, layer in enumerate(self.layers):
+            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+        return x
 
 
 class Conv(nn.Module):

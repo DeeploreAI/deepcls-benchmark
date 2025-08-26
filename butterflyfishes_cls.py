@@ -589,5 +589,5 @@ if __name__ == "__main__":
     main(args)
 
     # Report best validation results.
-    # ckpt_path = Path("/home/ziliang/Projects/inference-benchmark/logs/butterflyfishes-resnet18/version_0/ckpts/best.pth")
+    # ckpt_path = Path("/home/ziliang/Projects/inference-benchmark/logs/butterflyfishes-resnet34/version_0/ckpts/best.pth")
     # report_best_val_results(args, ckpt_path)
