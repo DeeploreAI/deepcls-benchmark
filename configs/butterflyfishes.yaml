@@ -1,21 +1,22 @@
-device:
+device:  # params related to the harware device
   num_devices: 1
   num_workers: 8
   pin_memory: True
 
-data:
-  root: "/home/ziliang/Projects/Marine Datasets/butterflyfishes_cls"
+data:  # params related to the dataset construction
+  root_path: "/home/ziliang/Projects/Marine Datasets/butterflyfishes_cls"
   num_cls: 28
-  batch_size: 128
-  shuffle: True
-  augmentation: True
+  aug: True
 
-train:
-  expt_name: "butterflyfishes-resnet101"
-  model_name: "resnet101"
+train:  # params related to the training data loading, optimizer, training
+  expt_name: "butterflyfishes-resnet18"
+  model_name: "resnet18"
+  resume_version:
   pretrained: # "imagenet1k_v1"
   optimizer: "AdamW"
   lr: 0.001
   weight_decay: 0.05
   epochs: 100
   validate_epoch: 5
+  batch_size: 128
+  shuffle: True

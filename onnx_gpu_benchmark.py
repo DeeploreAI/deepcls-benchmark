@@ -16,7 +16,7 @@ import torch.onnx
 # Local lib
 from models.utils import Model
 from models.utils import set_deterministic
-from butterflyfishes_cls import load_pretrained_ckpt
+from fam_cls_train import load_pretrained_ckpt
 from backbone_info_benchmark import image_preprocess
 
 

@@ -1,6 +1,4 @@
-import argparse
-import datetime
-from typing import Optional, List
+from typing import List
 import yaml
 import shutil
 from pathlib import Path
@@ -8,154 +6,19 @@ import pandas as pd
 
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
-import os
 
 from models.utils import Model
 from datasets.dataloader import data_loader
-from models.metrics import topk_accuracy
+from ai_shared.training_engine import (
+    load_resume_ckpt, save_ckpt,
+    setup_logging, parse_args, merge_yaml_with_args,
+    set_deterministic, train_epoch
+)
+from ai_shared.optimizer import optimizer_scheduler
+from ai_shared.metrics import TopKAccuracy
 
 
 MODEL_NAMES = ["resnet18", "resnet34", "resnet50", "resnet101", "vgg16", "vgg19"]
-
-
-def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cfg", type=str, default="./configs/butterflyfishes.yaml")
-    parser.add_argument("--resume_version", type=int, default=None)
-    
-    # Parse the config file path first.
-    args, unknown = parser.parse_known_args(argv)
-    
-    # Load YAML config and merge with args.
-    args = merge_yaml_with_args(args.cfg, args)
-    return args
-
-
-def merge_yaml_with_args(config_path: str, args: argparse.Namespace) -> argparse.Namespace:
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-        
-        if config is None:
-            print(f"Not a valid config file: {config_path}")
-            return args
-        
-        # Convert args to dict.
-        args_dict = vars(args)
-        
-        # Merge config with args.
-        for key, value_dict in config.items():
-            if type(value_dict) is dict:
-                for k, v in value_dict.items():
-                    args_dict[k] = v
-        
-        # Convert back to Namespace.
-        return argparse.Namespace(**args_dict)
-        
-    except FileNotFoundError:
-        print(f"Warning: Config file {config_path} not found. Using default arguments.")
-        return args
-    except yaml.YAMLError as e:
-        print(f"Warning: Error parsing YAML file {config_path}: {e}. Using default arguments.")
-        return args
-
-
-def save_training_config(args, log_dir: Path):
-    if args.resume_version is not None:
-        # Resume training, check the resume config, then save current config.
-        resume_config_path = log_dir.parent / f"version_{args.resume_version}" / "config.yaml"
-        with open(resume_config_path, 'r') as f:
-            resume_config = yaml.safe_load(f)
-        args_dict = vars(args)
-        for k, resume_v in resume_config.items():
-            current_v = args_dict[k]
-            if resume_v != current_v:
-                print(f"Warning: the current and resume value of {k} are not match.")
-
-    # Save current training config.
-    config_file = log_dir / "config.yaml"
-    with open(config_file, 'w') as f:
-        yaml.dump(vars(args), f, default_flow_style=False)
-
-
-def setup_logging(args):
-    if args.expt_name:
-        expt_name = args.expt_name
-    else:
-        expt_name = f"{args.model_name}_{datetime.datetime.now().strftime('%m%d_%H%M')}"
-
-    # Resume.
-    if args.resume_version is not None:
-        # Resume training.
-        log_dir = Path("./logs") / f"{expt_name}" / f"version_{args.resume_version + 1}"
-    else:
-        # First time training.
-        log_dir = Path("./logs") / f"{expt_name}" / "version_0"
-
-    os.makedirs(log_dir, exist_ok=True)
-    logger = SummaryWriter(log_dir=log_dir)
-
-    # Save training config file.
-    save_training_config(args, log_dir)
-
-    return logger, log_dir
-
-
-def optimizer_scheduler(args, model, num_iters):
-    # Initialize optimizer.
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr)
-
-    # Create warmup scheduler and cosine annealing scheduler.
-    warmup_iters_ratio = 0.1
-    warmup_iters = int(num_iters * warmup_iters_ratio)
-    warmup_scheduler = optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=1e-6,
-        end_factor=1.0,
-        total_iters=warmup_iters,
-    )
-    cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=num_iters - warmup_iters,
-        eta_min=1e-6,
-    )
-    scheduler = optim.lr_scheduler.SequentialLR(
-        optimizer,
-        [warmup_scheduler, cosine_scheduler],
-        milestones=[warmup_iters],
-    )
-    return optimizer, scheduler
-
-
-def save_ckpt(model_state, ckpt_path: Path, is_best=False):
-    torch.save(model_state, ckpt_path)
-    if is_best:
-        shutil.copyfile(ckpt_path, ckpt_path.parent / "best.pth")
-
-
-def load_ckpt(ckpt_path: Path, model, optimizer = None, scheduler = None):
-    if not ckpt_path.exists():
-        print(f"Checkpoint file {ckpt_path} not found!")
-        return None, 0
-
-    ckpt_state = torch.load(ckpt_path, map_location='cpu')
-    start_epoch = ckpt_state.get('epoch', 0)
-    print(f"\nLoad epoch {start_epoch} ckpt_state from {ckpt_path}, val top1 accuracy: {ckpt_state['val_top1_acc']:.2f}%")
-    
-    # Load model state dict.
-    model.load_state_dict(ckpt_state["model_state_dict"])
-    
-    # Load optimizer state and scheduler state if provided.
-    if (optimizer is not None) and (scheduler is not None):
-        try:
-            optimizer.load_state_dict(ckpt_state['optimizer_state_dict'])
-            scheduler.load_state_dict(ckpt_state['scheduler_state_dict'])
-        except KeyError:
-            print("Error: saved checkpoint state does not include optimizer state or scheduler state.")
-        return model, start_epoch, optimizer, scheduler
-    return model, start_epoch
 
 
 def load_pretrained_ckpt(model, pretrained_ckpt: Path):
@@ -230,75 +93,6 @@ def get_latest_ckpt(ckpt_dir: Path):
     return ckpt_files[-1]
 
 
-def train(args, train_loader, model, criterion, optimizer, scheduler, epoch, logger, global_iter, verbose_iters: int = 1):
-    # Switch mode.
-    model.train()
-    
-    running_loss = 0.0
-    running_top1_acc = 0.0
-    running_top3_acc = 0.0
-    running_top5_acc = 0.0
-    total_samples = 0
-    total_batches = len(train_loader)
-    for batch_idx, (input, target) in enumerate(train_loader):
-        # Forward propagation.
-        input = input.cuda(non_blocking=True)
-        target = target.cuda(non_blocking=True)
-        output = model(input)
-        loss = criterion(output, target)
-
-        # Number of samples.
-        num_samples = len(target)
-        total_samples += num_samples
-
-        # Metrics.
-        topk_acc = topk_accuracy(output, target, topk=(1, 3, 5))
-        top1_acc, top3_acc, top5_acc = [acc.item() for acc in topk_acc]
-
-        # Backward propagation, update optimizer and scheduler.
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-        
-        # Update running metrics
-        running_loss += loss.item() * num_samples
-        running_top1_acc += top1_acc * num_samples
-        running_top3_acc += top3_acc * num_samples
-        running_top5_acc += top5_acc * num_samples
-        
-        # Log metrics for each iteration
-        current_lr = optimizer.param_groups[0]['lr']
-        logger.add_scalar('Iter/Loss', loss.item(), global_iter)
-        logger.add_scalar('Iter/Top1_Accuracy', top1_acc, global_iter)
-        logger.add_scalar('Iter/Top3_Accuracy', top3_acc, global_iter)
-        logger.add_scalar('Iter/Top5_Accuracy', top5_acc, global_iter)
-        logger.add_scalar('Iter/Learning_Rate', current_lr, global_iter)
-        
-        global_iter += 1
-        
-        # Print progress every 100 iterations
-        if verbose_iters and (batch_idx+1) % verbose_iters == 0:
-            print(f'Epoch [{epoch}/{args.epochs}] [{batch_idx+1}/{total_batches}] '
-                  f'Loss: {loss.item():.4f} '
-                  f'Top1: {top1_acc:.2f}% '
-                  f'Top3: {top3_acc:.2f}% '
-                  f'Top5: {top5_acc:.2f}% '
-                  f'LR: {current_lr:.6f}')
-    
-    # Log epoch-level metrics
-    avg_loss = running_loss / total_samples
-    avg_top1_acc = running_top1_acc / total_samples
-    avg_top3_acc = running_top3_acc / total_samples
-    avg_top5_acc = running_top5_acc / total_samples
-    logger.add_scalar('Epoch/Train_Loss', avg_loss, epoch)
-    logger.add_scalar('Epoch/Train_Top1_Accuracy', avg_top1_acc, epoch)
-    logger.add_scalar('Epoch/Train_Top3_Accuracy', avg_top3_acc, epoch)
-    logger.add_scalar('Epoch/Train_Top5_Accuracy', avg_top5_acc, epoch)
-    
-    return global_iter
-
-
 def validate(val_loader, model, criterion, epoch, logger = None, verbose: bool = True):
     # Switch mode.
     model.eval()
@@ -360,8 +154,8 @@ def main(args) -> None:
     logger, log_dir = setup_logging(args)
     
     # Create model from model config file.
-    if args.model_name in MODEL_NAMES:
-        with open(f"./configs/models/{args.model_name}.yaml", "r") as f:
+    if args.train.model_name in MODEL_NAMES:
+        with open(f"./configs/models/{args.train.model_name}.yaml", "r") as f:
             model_cfg = yaml.safe_load(f)
         model = Model(model_cfg)
     else:
@@ -370,7 +164,7 @@ def main(args) -> None:
 
     # Load datasets.
     train_loader, val_loader = data_loader(args)
-    num_iters = len(train_loader) * args.epochs
+    num_iters = len(train_loader) * args.train.epochs
 
     # Define optimizer, scheduler and loss.
     criterion = nn.CrossEntropyLoss()
@@ -382,27 +176,33 @@ def main(args) -> None:
     best_val_acc = 0.0
 
     # Handle resume training.
-    if args.resume_version is not None:
-        resume_ckpts_dir = log_dir.parent / f"version_{args.resume_version}" / "ckpts"
+    if args.train.resume_version is not None:
+        resume_ckpts_dir = log_dir.parent / f"version_{args.train.resume_version}" / "ckpts"
         ckpt_path = get_latest_ckpt(resume_ckpts_dir)
         if ckpt_path:
-            model, start_epoch, optimizer, scheduler = load_ckpt(ckpt_path, model, optimizer, scheduler)
+            model, start_epoch, optimizer, scheduler = load_resume_ckpt(ckpt_path, model, optimizer, scheduler)
             global_iter = start_epoch * len(train_loader)  # Resume from the last global_iter
         else:
-            print(f"No checkpoint found for resume_version {args.resume_version}. Starting from epoch 1.")
+            print(f"No checkpoint found for resume_version {args.train.resume_version}. Starting from epoch 1.")
             start_epoch = 1
     else:
         # First time training.
-        if args.pretrained is not None:
-            pretrained_ckpt_path = Path("./pretrained") / f"{args.model_name}_{args.pretrained}.pth"
+        if args.train.pretrained is not None:
+            pretrained_ckpt_path = Path("./pretrained") / f"{args.train.model_name}_{args.train.pretrained}.pth"
             model = load_pretrained_ckpt(model, pretrained_ckpt_path)
         start_epoch = 1
 
     # Start training.
-    for epoch in range(start_epoch, args.epochs + 1):
-        global_iter = train(args, train_loader, model, criterion, optimizer, scheduler, epoch, logger, global_iter, verbose_iters=5)
+    for epoch in range(start_epoch, args.train.epochs + 1):
+        metrics_fn = {
+            "Top1_Acc": TopKAccuracy(topk=1),
+            "Top3_Acc": TopKAccuracy(topk=3),
+            "Top5_Acc": TopKAccuracy(topk=5),
+        }
+        global_iter = train_epoch(args, train_loader, model, criterion, optimizer, scheduler, epoch, logger,
+                                  global_iter, metrics_fn=metrics_fn, verbose_iters=5)
 
-        if (args.validate_epoch is not None) and (epoch % args.validate_epoch == 0):
+        if (args.train.validate_epoch is not None) and (epoch % args.train.validate_epoch == 0):
             # Validate.
             loss, top1_acc, top3_acc, top5_acc = validate(val_loader, model, criterion, epoch, logger, verbose=True)
 
@@ -433,12 +233,12 @@ def main(args) -> None:
 
 def report_best_val_results(args, best_ckpt: Path) -> None:
     # Model.
-    with open(f"./configs/models/{args.model_name}.yaml", "r") as f:
+    with open(f"./configs/models/{args.train.model_name}.yaml", "r") as f:
         model_cfg = yaml.safe_load(f)
     model = Model(model_cfg)
 
     # Load best checkpoint.
-    model, epoch = load_ckpt(best_ckpt, model)
+    model, epoch = load_resume_ckpt(best_ckpt, model)
     model = model.cuda()
 
     # Load validation dataset.
@@ -446,7 +246,7 @@ def report_best_val_results(args, best_ckpt: Path) -> None:
 
     # Create per class metrics.
     top1_acc_per_cls, top3_acc_per_cls, top5_acc_per_cls = {}, {}, {}
-    idx_to_class_path = Path(args.root) / "idx_to_class.yaml"
+    idx_to_class_path = Path(args.data.root_path) / "idx_to_class.yaml"
     with open(idx_to_class_path, "r") as f:
         idx_to_class = yaml.safe_load(f)
     num_cls = len(idx_to_class)
@@ -585,7 +385,10 @@ def report_best_val_results(args, best_ckpt: Path) -> None:
 
 
 if __name__ == "__main__":
-    args = parse_args()
+    set_deterministic(666)
+    argv = ['--cfg_path', './configs/butterflyfishes.yaml']
+    args = parse_args(argv)
+    args = merge_yaml_with_args(args.cfg_path, args)
     main(args)
 
     # Report best validation results.

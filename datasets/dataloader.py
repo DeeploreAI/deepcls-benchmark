@@ -7,10 +7,12 @@ import torchvision.datasets as datasets
 
 def data_loader(args):
     # Directory.
-    root = Path(args.root)
+    root = Path(args.data.root_path)
     train_dir = root / "train"
     val_dir = root / "val"
 
+    # TODO: a bug here, the training augmentation is conducted after a 256 short side resize and a 224 center crop.
+    # TODO: so the random resized crop didn't work well.
     # Image pre-processing.
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
@@ -20,7 +22,7 @@ def data_loader(args):
             transforms.ToTensor(),
             normalize
         ])
-    if args.augmentation:
+    if args.data.aug:
         aug_transforms = transforms.Compose([
             transforms.RandomResizedCrop(224),
             transforms.RandomHorizontalFlip(),
@@ -41,19 +43,19 @@ def data_loader(args):
     # Loader.
     train_loader = torch.utils.data.DataLoader(
         train_set,
-        batch_size=args.batch_size,
-        shuffle=args.shuffle,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_memory,
+        batch_size=args.train.batch_size,
+        shuffle=args.train.shuffle,
+        num_workers=args.device.num_workers,
+        pin_memory=args.device.pin_memory,
         sampler=None,
         drop_last=False
     )
     val_loader = torch.utils.data.DataLoader(
         val_set,
-        batch_size=args.batch_size,
+        batch_size=args.train.batch_size,
         shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_memory,
+        num_workers=args.device.num_workers,
+        pin_memory=args.device.pin_memory,
         drop_last=False
     )
     return train_loader, val_loader

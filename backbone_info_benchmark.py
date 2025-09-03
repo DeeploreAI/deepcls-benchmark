@@ -13,8 +13,8 @@ import torchvision.transforms as transforms
 import torchvision.models as models
 
 from models.utils import Model
-from models.utils import set_deterministic
-from butterflyfishes_cls import load_pretrained_ckpt
+from fam_cls_train import load_pretrained_ckpt
+from ai_shared.training_engine import set_deterministic
 
 
 MODEL_MAP = {
