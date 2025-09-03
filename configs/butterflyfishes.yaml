@@ -17,6 +17,6 @@ train:  # params related to the training data loading, optimizer, training
   lr: 0.001
   weight_decay: 0.05
   epochs: 100
-  validate_epoch: 5
+  validate_epoch: 1
   batch_size: 128
   shuffle: True

@@ -6,13 +6,14 @@ import pandas as pd
 
 import torch
 import torch.nn as nn
+from torch.backends.mkl import verbose
 
 from models.utils import Model
 from datasets.dataloader import data_loader
 from ai_shared.training_engine import (
     load_resume_ckpt, save_ckpt,
     setup_logging, parse_args, merge_yaml_with_args,
-    set_deterministic, train_epoch
+    set_deterministic, train_epoch, validate_epoch
 )
 from ai_shared.optimizer import optimizer_scheduler
 from ai_shared.metrics import TopKAccuracy
@@ -93,53 +94,6 @@ def get_latest_ckpt(ckpt_dir: Path):
     return ckpt_files[-1]
 
 
-def validate(val_loader, model, criterion, epoch, logger = None, verbose: bool = True):
-    # Switch mode.
-    model.eval()
-
-    running_loss = 0.0
-    running_top1_acc = 0.0
-    running_top3_acc = 0.0
-    running_top5_acc = 0.0
-    total_samples = 0
-
-    for batch_idx, (input, target) in enumerate(val_loader):
-        # Forward propagation.
-        input = input.cuda(non_blocking=True)
-        target = target.cuda(non_blocking=True)
-        with torch.no_grad():
-            output = model(input)
-            loss = criterion(output, target)
-            num_samples = len(target)
-            total_samples += num_samples
-
-            # Metrics.
-            topk_acc = topk_accuracy(output, target, topk=(1, 3, 5))
-            top1_acc, top3_acc, top5_acc = [acc.item() for acc in topk_acc]
-
-            # Update running metrics.
-            running_loss += loss.item() * num_samples
-            running_top1_acc += top1_acc * num_samples
-            running_top3_acc += top3_acc * num_samples
-            running_top5_acc += top5_acc * num_samples
-
-    # Log epoch-level metrics
-    avg_loss = running_loss / total_samples
-    avg_top1_acc = running_top1_acc / total_samples
-    avg_top3_acc = running_top3_acc / total_samples
-    avg_top5_acc = running_top5_acc / total_samples
-    if logger:
-        logger.add_scalar('Val/Loss', avg_loss, epoch)
-        logger.add_scalar('Val/Top1_Accuracy', avg_top1_acc, epoch)
-        logger.add_scalar('Val/Top3_Accuracy', avg_top3_acc, epoch)
-        logger.add_scalar('Val/Top5_Accuracy', avg_top5_acc, epoch)
-    if verbose:
-        print(f'Val Loss: {avg_loss:.4f} '
-              f'Val Top1: {avg_top1_acc:.2f}% '
-              f'Val Top3: {avg_top3_acc:.2f}% '
-              f'Val Top5: {avg_top5_acc:.2f}%')
-    return avg_loss, avg_top1_acc, avg_top3_acc, avg_top5_acc
-
 
 def to_device(nn_module_list: List):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -173,7 +127,7 @@ def main(args) -> None:
     # Training and validating.
     model, criterion = to_device([model, criterion])
     global_iter = 0
-    best_val_acc = 0.0
+    best_val_metric = 0.0
 
     # Handle resume training.
     if args.train.resume_version is not None:
@@ -203,8 +157,8 @@ def main(args) -> None:
                                   global_iter, metrics_fn=metrics_fn, verbose_iters=5)
 
         if (args.train.validate_epoch is not None) and (epoch % args.train.validate_epoch == 0):
-            # Validate.
-            loss, top1_acc, top3_acc, top5_acc = validate(val_loader, model, criterion, epoch, logger, verbose=True)
+            avg_losses, avg_metrics = validate_epoch(args, val_loader, model, criterion, epoch, logger,
+                                                     metrics_fn=metrics_fn, verbose=True)
 
             # Save checkpoint file.
             ckpt_state = {
@@ -212,16 +166,17 @@ def main(args) -> None:
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
-                "val_top1_acc": top1_acc,
-                "val_top3_acc": top3_acc,
-                "val_top5_acc": top5_acc,
+                "metrics": avg_metrics,
             }
             ckpt_file = log_dir / "ckpts" / f"epoch_{epoch}.pth"
             ckpt_file.parent.mkdir(parents=True, exist_ok=True)
-            if top1_acc > best_val_acc:
+
+            # Save best checkpoint.
+            main_metric = list(avg_metrics.values())[0]
+            if main_metric > best_val_metric:
                 is_best = True
-                best_val_acc = top1_acc
-                print(f"Best ckpt at epoch {epoch}, top1_acc: {best_val_acc:.2f}%")
+                best_val_metric = main_metric
+                print(f"Best ckpt at epoch {epoch}, {list(avg_metrics.keys())[0]}: {best_val_metric:.2f}%")
             else:
                 is_best = False
             save_ckpt(ckpt_state, ckpt_file, is_best=is_best)
