@@ -162,7 +162,7 @@ def main():
     # Models
     for model_name in MODEL_MAP.keys():
         print(f"\n=== Testing {model_name} ===")
-        model_cfg_path = os.path.join("./configs/models", f"{model_name}.yaml")
+        model_cfg_path = os.path.join("../configs/models", f"{model_name}.yaml")
         with open(model_cfg_path, 'r', encoding='utf-8') as f:
             model_cfg = yaml.safe_load(f)
         model = Model(model_cfg)

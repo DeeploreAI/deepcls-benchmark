@@ -1,6 +1,7 @@
 # Ignore pretrained model weights, exported onnx model
 pretrained/
 onnx/
+outputs/
 
 # Ignore other model files
 *.pth

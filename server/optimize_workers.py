@@ -28,7 +28,7 @@ import os
 
 # Add parent directory to path to import training script
 sys.path.append(str(Path(__file__).parent.parent))
-from fam_cls_train import parse_args, main as train_main
+from fam_cls_train import parse_args, train as train_main
 
 
 @dataclass
