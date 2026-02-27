@@ -41,7 +41,7 @@ MODEL_CONFIG = {
     "model": "convnext_tiny",
     "input_size": 224,
     "batch_size_per_device": 128,
-    "epochs": 100,
+    "epochs": 2,  # total epochs, including warmup and cosine annealing
     "seed": 666,
     "num_workers": 12,
     "pin_mem": True,
@@ -54,7 +54,7 @@ MODEL_CONFIG = {
 # Optimizer configuration
 OPTIMIZER_CONFIG = {
     "opt": "adamw",
-    "lr": 1e-3,  # 4e-3 * total_batch_size / 1024
+    "lr": 2e-3,  # 4e-3 * total_batch_size / 1024
     "weight_decay": 0.05,
     "opt_eps": 1e-8,
     "opt_betas": (0.9, 0.999),
@@ -65,7 +65,7 @@ OPTIMIZER_CONFIG = {
 SCHEDULER_CONFIG = {
     "min_lr": 1e-6,
     "warmup_lr": 1e-6,
-    "warmup_epochs": 10,
+    "warmup_epochs": 1,
 }
 
 # Data augmentation configuration
@@ -280,14 +280,14 @@ def build_optimizer(model: nn.Module):
     )
 
 
-def build_scheduler(optimizer, updates_per_epoch: int):
+def build_scheduler(optimizer, iters_per_epoch: int):
     return CosineLRScheduler(
         optimizer,
-        t_initial=TRAIN_CONFIG["epochs"] * updates_per_epoch,
+        t_initial=(TRAIN_CONFIG["epochs"] - TRAIN_CONFIG["warmup_epochs"]) * iters_per_epoch,
         lr_min=TRAIN_CONFIG["min_lr"],
-        warmup_t=TRAIN_CONFIG["warmup_epochs"] * updates_per_epoch,
+        warmup_t=TRAIN_CONFIG["warmup_epochs"] * iters_per_epoch,
         warmup_lr_init=TRAIN_CONFIG["warmup_lr"],
-        warmup_prefix=False,  # Changed from True to False
+        warmup_prefix=True,  # Warmup phase is separate from cosine schedule
         cycle_limit=1,
         t_in_epochs=False,
     )
@@ -528,10 +528,18 @@ def main() -> None:
 
     model = build_model(num_classes=num_classes)
     optimizer = build_optimizer(model)
-    updates_per_epoch = len(train_loader)
-    scheduler = build_scheduler(optimizer, updates_per_epoch)
 
-    # Load checkpoint BEFORE preparing with accelerator
+    # Prepare everything with Accelerate FIRST to get correct dataloader length
+    model, optimizer, train_loader, val_loader = accelerator.prepare(
+        model, optimizer, train_loader, val_loader
+    )
+
+    # Calculate iters_per_epoch AFTER prepare (accounts for multi-device data splitting)
+    iters_per_epoch = len(train_loader)
+    scheduler = build_scheduler(optimizer, iters_per_epoch)
+    scheduler = accelerator.prepare(scheduler)
+
+    # Load checkpoint AFTER preparing with accelerator
     start_epoch = 0
     best_acc1 = 0.0
     model_ema = None
@@ -539,7 +547,7 @@ def main() -> None:
     if args.resume is not None:
         # Create temporary EMA model for loading checkpoint
         if TRAIN_CONFIG["model_ema"]:
-            model_ema = ModelEmaV2(model, decay=TRAIN_CONFIG["model_ema_decay"])
+            model_ema = ModelEmaV2(accelerator.unwrap_model(model), decay=TRAIN_CONFIG["model_ema_decay"])
         start_epoch, best_acc1, ckpt = load_checkpoint(
             args.resume,
             model,
@@ -549,11 +557,6 @@ def main() -> None:
         )
         # Clear temporary EMA, will recreate after prepare
         model_ema = None
-
-    # Prepare everything with Accelerate
-    model, optimizer, train_loader, val_loader, scheduler = accelerator.prepare(
-        model, optimizer, train_loader, val_loader, scheduler
-    )
 
     # Cache unwrapped model to avoid repeated unwrapping
     unwrapped_model = accelerator.unwrap_model(model)
